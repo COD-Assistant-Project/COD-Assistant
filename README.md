@@ -8,11 +8,11 @@ Vos données Call of Dragons, organisées au même endroit.
 
 Unofficial community project • Projet communautaire non officiel
 
-<a href="#-english">🇬🇧 English</a> • <a href="#-français">🇫🇷 Français</a> • <a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases">📦 Releases</a> • <a href="https://paypal.me/EpiykFox">☕ PayPal</a>
+<a href="#-english">EN English</a> • <a href="#-français">🇫🇷 Français</a> • <a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases/latest/download/COD_Assistant_FULL.zip">📦 Download latest FULL</a> • <a href="https://paypal.me/EpiykFox" target="_blank" rel="noopener noreferrer">☕ PayPal</a>
 
 </div>
 
-🇬🇧 English
+EN English
 
 What is COD Assistant?
 
@@ -47,7 +47,7 @@ Think of COD Assistant as a centralization and analysis tool, not as an official
 
 📥 Download
 
-<p><a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases"><strong>➡️ Download COD Assistant from GitHub Releases</strong></a></p>
+<p><a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases/latest/download/COD_Assistant_FULL.zip"><strong>➡️ Download the latest COD Assistant FULL</strong></a></p>
 
 For normal use, download the packaged release — not the green Code → Download ZIP button.
 
@@ -71,7 +71,7 @@ COD Assistant is free to use. Donations are completely optional and unlock absol
 
 If you enjoy the project and want to support development:
 
-<p><a href="https://paypal.me/EpiykFox"><strong>☕ Support COD Assistant on PayPal</strong></a></p>
+<p><a href="https://paypal.me/EpiykFox" target="_blank" rel="noopener noreferrer"><strong>☕ Support COD Assistant on PayPal</strong></a></p>
 
 Donations may help with development and project costs...
 
@@ -114,7 +114,7 @@ COD Assistant est avant tout un outil de centralisation et d'analyse, pas un ora
 
 📥 Télécharger
 
-<p><a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases"><strong>➡️ Télécharger COD Assistant depuis GitHub Releases</strong></a></p>
+<p><a href="https://github.com/COD-Assistant-Project/COD-Assistant/releases/latest/download/COD_Assistant_FULL.zip"><strong>➡️ Télécharger le dernier FULL de COD Assistant</strong></a></p>
 
 Pour une utilisation normale, télécharge la Release préparée — pas le bouton vert Code → Download ZIP.
 
@@ -138,7 +138,7 @@ COD Assistant est gratuit. Les dons sont totalement facultatifs et ne débloquen
 
 Si le projet t'est utile et que tu souhaites soutenir son développement :
 
-<p><a href="https://paypal.me/EpiykFox"><strong>☕ Soutenir COD Assistant via PayPal</strong></a></p>
+<p><a href="https://paypal.me/EpiykFox" target="_blank" rel="noopener noreferrer"><strong>☕ Soutenir COD Assistant via PayPal</strong></a></p>
 
 Les dons peuvent aider au développement et aux frais liés au projet...
 
