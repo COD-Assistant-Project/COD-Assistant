@@ -129,6 +129,69 @@ jobs:
               if old:delete_asset(old)
               upload_asset(target,full_zip,full_name)
 
+              # RC110 canonical sync store: describe the ENTIRE target FULL state and
+              # split it into deterministic path buckets. Unchanged content-addressed
+              # packs may be reused from the previous public release; only changed
+              # buckets need a new GitHub asset. This lets a client jump directly from
+              # any older install to the latest state without replaying every RC.
+              def file_sha(path):
+                  h=hashlib.sha256()
+                  with open(path,'rb') as f:
+                      for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
+                  return h.hexdigest()
+
+              public_files=[]
+              for fp in sorted(root.rglob('*')):
+                  if not fp.is_file():continue
+                  rel=fp.relative_to(root).as_posix()
+                  if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):continue
+                  public_files.append((rel,fp,file_sha(fp),fp.stat().st_size))
+
+              bucket_count=64
+              buckets={i:[] for i in range(bucket_count)}
+              for rel,fp,digest,size in public_files:
+                  bid=int(hashlib.sha256(rel.encode()).hexdigest()[:8],16)%bucket_count
+                  buckets[bid].append((rel,fp,digest,size))
+
+              # Existing target assets win; baseline assets are reusable references.
+              target_assets={str(a.get('name') or ''):a for a in (target.get('assets') or [])}
+              baseline_assets={str(a.get('name') or ''):a for a in (baseline.get('assets') or [])}
+              sync_files={};sync_packs={};referenced_names=set()
+              for bid,rows in buckets.items():
+                  if not rows:continue
+                  rows.sort(key=lambda x:x[0])
+                  sig=hashlib.sha256(''.join(f'{r}\0{d}\0{sz}\n' for r,_,d,sz in rows).encode()).hexdigest()
+                  pack_name=f'COD_SYNC_B{bid:02d}_{sig[:16]}.zip'; referenced_names.add(pack_name)
+                  pack_path=tmp/pack_name
+                  remote=target_assets.get(pack_name) or baseline_assets.get(pack_name)
+                  if remote is None:
+                      with zipfile.ZipFile(pack_path,'w',zipfile.ZIP_DEFLATED,compresslevel=7) as pz:
+                          for rel,fp,digest,size in rows:pz.write(fp,rel)
+                      remote=upload_asset(target,pack_path,pack_name)
+                  pack_size=int(remote.get('size') or (pack_path.stat().st_size if pack_path.exists() else 0))
+                  sync_packs[str(bid)]={'asset_name':pack_name,'sha256':sig,'size':pack_size,'download_url':remote.get('browser_download_url'),'file_count':len(rows)}
+                  for rel,fp,digest,size in rows:
+                      sync_files[rel]={'sha256':digest,'size':size,'pack':str(bid)}
+
+              sync_manifest={
+                  'schema_version':1,'type':'COD_CANONICAL_SYNC','target_tag':target_tag,
+                  'full_asset':full_name,'full_sha256':full_sha,'generated_by':'github-actions',
+                  'bucket_count':bucket_count,'files':sync_files,'packs':sync_packs,
+                  'managed_roots':['app','scripts','runtime','core_catalog','docs','assets','reference_data','factory_base'],
+                  'preserve':['data/','backups/','A_TESTER/','user_content/','imports/','DEV/'],
+                  'obsolete_files':[]
+              }
+              old_sync=asset(target,lambda n:n=='sync_manifest.json')
+              if old_sync:delete_asset(old_sync)
+              sync_path=tmp/'sync_manifest.json';sync_path.write_text(json.dumps(sync_manifest,ensure_ascii=False,indent=2),encoding='utf-8')
+              upload_asset(target,sync_path,'sync_manifest.json')
+
+              # Remove stale target-local sync buckets from an earlier rerun. Packs
+              # referenced from the baseline release are never touched.
+              for nm,a in target_assets.items():
+                  if nm.startswith('COD_SYNC_B') and nm.endswith('.zip') and nm not in referenced_names:
+                      delete_asset(a)
+
               # Refresh manifest/checksums so the rebuilt FULL digest is authoritative.
               man_asset=asset(target,lambda n:n=='manifest.json')
               man={}
