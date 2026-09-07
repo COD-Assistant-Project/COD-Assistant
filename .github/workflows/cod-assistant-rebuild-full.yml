@@ -1,10 +1,10 @@
-name: COD Assistant - Rebuild FULL
+name: COD Assistant - Rebuild canonical FULL
 
 on:
   workflow_dispatch:
     inputs:
       target_tag:
-        description: "Target draft/release tag to receive rebuilt FULL"
+        description: "Target draft/release tag"
         required: true
         type: string
       baseline_tag:
@@ -19,7 +19,7 @@ jobs:
   rebuild-full:
     runs-on: ubuntu-latest
     steps:
-      - name: Rebuild FULL from baseline + delta
+      - name: Rebuild canonical FULL and manifest
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -28,186 +28,81 @@ jobs:
           BASELINE_TAG: ${{ inputs.baseline_tag }}
         run: |
           python - <<'PYCODE'
-          import os, json, urllib.request, urllib.parse, urllib.error, zipfile, tempfile, shutil, hashlib, re
+          import os,json,urllib.request,urllib.parse,urllib.error,zipfile,tempfile,shutil,hashlib,re
           from pathlib import Path
-
-          token=os.environ['GH_TOKEN']; repo=os.environ['GH_REPOSITORY']
-          target_tag=os.environ['TARGET_TAG']; baseline_tag=os.environ['BASELINE_TAG']
+          token=os.environ['GH_TOKEN'];repo=os.environ['GH_REPOSITORY'];target_tag=os.environ['TARGET_TAG'];baseline_tag=os.environ['BASELINE_TAG']
           api=f'https://api.github.com/repos/{repo}'
-          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'COD-Assistant-FULL-Builder/1'}
-
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2022-11-28','User-Agent':'COD-Assistant-FULL-Builder/2'}
+          preserve=('data/','backups/','A_TESTER/','DEV/','user_content/','imports/','exports/','MAJ/','releases/')
+          managed={'app','scripts','runtime','core_catalog','docs','assets','reference_data','factory_base','cogs','foundation'}
           def req(url,method='GET',payload=None,accept=None,raw=None,ctype=None):
-              h=dict(headers)
+              h=dict(headers);data=raw
               if accept:h['Accept']=accept
-              data=raw
-              if payload is not None:
-                  data=json.dumps(payload).encode(); h['Content-Type']='application/json'
+              if payload is not None:data=json.dumps(payload).encode();h['Content-Type']='application/json'
               if ctype:h['Content-Type']=ctype
               r=urllib.request.Request(url,data=data,method=method,headers=h)
-              with urllib.request.urlopen(r,timeout=600) as x:
-                  b=x.read(); return x.status,b,dict(x.headers.items())
-
+              with urllib.request.urlopen(r,timeout=900) as x:return x.status,x.read(),dict(x.headers.items())
           def jreq(url,method='GET',payload=None):
-              st,b,h=req(url,method,payload); return st,(json.loads(b.decode()) if b else {}),h
-
-          def releases():
-              st,d,_=jreq(api+'/releases?per_page=100'); return d
-
+              st,b,h=req(url,method,payload);return st,(json.loads(b.decode()) if b else {}),h
+          def releases():return jreq(api+'/releases?per_page=100')[1]
           def find_release(tag):
               for r in releases():
                   if str(r.get('tag_name'))==tag:return r
-              raise RuntimeError(f'Release not found: {tag}')
-
-          def asset(release,pred):
-              for a in release.get('assets') or []:
-                  if pred(str(a.get('name') or '')): return a
-              return None
-
-          def download_asset(a,path):
-              st,b,_=req(a['url'],accept='application/octet-stream'); Path(path).write_bytes(b)
-
-          def delete_asset(a):
+              raise RuntimeError('Release not found: '+tag)
+          def asset(rel,pred):
+              for a in rel.get('assets') or []:
+                  if pred(str(a.get('name') or '')):return a
+          def download(a,p):Path(p).write_bytes(req(a['url'],accept='application/octet-stream')[1])
+          def delete(a):
+              if not a:return
               try:req(a['url'],method='DELETE')
               except urllib.error.HTTPError as e:
                   if e.code!=404:raise
-
-          def upload_asset(release,path,name=None):
-              p=Path(path); nm=name or p.name
-              base=str(release['upload_url']).split('{',1)[0]
-              url=base+'?'+urllib.parse.urlencode({'name':nm})
-              st,b,_=req(url,method='POST',raw=p.read_bytes(),ctype='application/zip' if nm.lower().endswith('.zip') else 'application/octet-stream')
-              return json.loads(b.decode())
-
+          def upload(rel,p,name=None):
+              p=Path(p);nm=name or p.name;base=str(rel['upload_url']).split('{',1)[0];url=base+'?'+urllib.parse.urlencode({'name':nm});return json.loads(req(url,method='POST',raw=p.read_bytes(),ctype='application/zip' if nm.endswith('.zip') else 'application/octet-stream')[1].decode())
           def sha(p):
               h=hashlib.sha256()
               with open(p,'rb') as f:
-                  for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
+                  for b in iter(lambda:f.read(1024*1024),b''):h.update(b)
               return h.hexdigest()
-
-          target=find_release(target_tag); baseline=find_release(baseline_tag)
-          base_asset=asset(baseline,lambda n:n.endswith('_FULL.zip'))
-          upd_asset=asset(target,lambda n:n.endswith('_UPDATE.zip'))
-          if not base_asset:raise RuntimeError(f'No FULL in baseline {baseline_tag}')
-          if not upd_asset:raise RuntimeError(f'No UPDATE in target {target_tag}')
-
+          target=find_release(target_tag);base=find_release(baseline_tag);ba=asset(base,lambda n:n.endswith('_FULL.zip'));ua=asset(target,lambda n:n.endswith('_UPDATE.zip'))
+          if not ba:raise RuntimeError('No baseline FULL')
+          if not ua:raise RuntimeError('No temporary UPDATE in target')
           tmp=Path(tempfile.mkdtemp(prefix='cod_full_'))
           try:
-              base_zip=tmp/'baseline.zip'; upd_zip=tmp/'update.zip'
-              download_asset(base_asset,base_zip); download_asset(upd_asset,upd_zip)
-              extract=tmp/'full'; extract.mkdir()
-              with zipfile.ZipFile(base_zip) as z:z.extractall(extract)
-              roots=[p for p in extract.iterdir()]
-              root=roots[0] if len(roots)==1 and roots[0].is_dir() else extract
-              with zipfile.ZipFile(upd_zip) as z:
-                  manifest=json.loads(z.read('update_manifest.json').decode('utf-8'))
-                  for rel in manifest.get('replace') or []:
-                      if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):raise RuntimeError('Unsafe replace '+rel)
-                      dest=(root/rel).resolve()
-                      if root.resolve() not in dest.parents:raise RuntimeError('Unsafe path '+rel)
-                      dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(z.read(rel))
-                  for rel in manifest.get('delete') or []:
-                      if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):raise RuntimeError('Unsafe delete '+rel)
-                      dest=(root/rel).resolve()
-                      if root.resolve() not in dest.parents:raise RuntimeError('Unsafe delete path '+rel)
-                      if dest.is_file() or dest.is_symlink():dest.unlink(missing_ok=True)
-                      elif dest.is_dir():shutil.rmtree(dest)
-
-              m=re.search(r'v(\d+)\.(\d+)\.(\d+)-rc(\d+)',target_tag,re.I)
-              label=f'V{m.group(1)}_{m.group(2)}_{m.group(3)}_RC{m.group(4)}' if m else re.sub(r'[^A-Za-z0-9]+','_',target_tag).strip('_')
-              full_name=f'COD_ASSISTANT_{label}_FULL.zip'
-              full_zip=tmp/full_name
-              with zipfile.ZipFile(full_zip,'w',zipfile.ZIP_DEFLATED,compresslevel=7) as z:
-                  if root==extract:
-                      for p in sorted(extract.rglob('*')):
-                          if p.is_file():z.write(p,p.relative_to(extract).as_posix())
-                  else:
-                      for p in sorted(root.rglob('*')):
-                          if p.is_file():z.write(p,(Path(root.name)/p.relative_to(root)).as_posix())
-              full_sha=sha(full_zip)
-
-              old=asset(target,lambda n:n.endswith('_FULL.zip'))
-              if old:delete_asset(old)
-              upload_asset(target,full_zip,full_name)
-
-              # RC110 canonical sync store: describe the ENTIRE target FULL state and
-              # split it into deterministic path buckets. Unchanged content-addressed
-              # packs may be reused from the previous public release; only changed
-              # buckets need a new GitHub asset. This lets a client jump directly from
-              # any older install to the latest state without replaying every RC.
-              def file_sha(path):
-                  h=hashlib.sha256()
-                  with open(path,'rb') as f:
-                      for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
-                  return h.hexdigest()
-
-              public_files=[]
-              for fp in sorted(root.rglob('*')):
-                  if not fp.is_file():continue
-                  rel=fp.relative_to(root).as_posix()
-                  if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):continue
-                  public_files.append((rel,fp,file_sha(fp),fp.stat().st_size))
-
-              bucket_count=64
-              buckets={i:[] for i in range(bucket_count)}
-              for rel,fp,digest,size in public_files:
-                  bid=int(hashlib.sha256(rel.encode()).hexdigest()[:8],16)%bucket_count
-                  buckets[bid].append((rel,fp,digest,size))
-
-              # Existing target assets win; baseline assets are reusable references.
-              target_assets={str(a.get('name') or ''):a for a in (target.get('assets') or [])}
-              baseline_assets={str(a.get('name') or ''):a for a in (baseline.get('assets') or [])}
-              sync_files={};sync_packs={};referenced_names=set()
-              for bid,rows in buckets.items():
-                  if not rows:continue
-                  rows.sort(key=lambda x:x[0])
-                  sig=hashlib.sha256(''.join(f'{r}\0{d}\0{sz}\n' for r,_,d,sz in rows).encode()).hexdigest()
-                  pack_name=f'COD_SYNC_B{bid:02d}_{sig[:16]}.zip'; referenced_names.add(pack_name)
-                  pack_path=tmp/pack_name
-                  remote=target_assets.get(pack_name) or baseline_assets.get(pack_name)
-                  if remote is None:
-                      with zipfile.ZipFile(pack_path,'w',zipfile.ZIP_DEFLATED,compresslevel=7) as pz:
-                          for rel,fp,digest,size in rows:pz.write(fp,rel)
-                      remote=upload_asset(target,pack_path,pack_name)
-                  pack_size=int(remote.get('size') or (pack_path.stat().st_size if pack_path.exists() else 0))
-                  sync_packs[str(bid)]={'asset_name':pack_name,'sha256':sig,'size':pack_size,'download_url':remote.get('browser_download_url'),'file_count':len(rows)}
-                  for rel,fp,digest,size in rows:
-                      sync_files[rel]={'sha256':digest,'size':size,'pack':str(bid)}
-
-              sync_manifest={
-                  'schema_version':1,'type':'COD_CANONICAL_SYNC','target_tag':target_tag,
-                  'full_asset':full_name,'full_sha256':full_sha,'generated_by':'github-actions',
-                  'bucket_count':bucket_count,'files':sync_files,'packs':sync_packs,
-                  'managed_roots':['app','scripts','runtime','core_catalog','docs','assets','reference_data','factory_base'],
-                  'preserve':['data/','backups/','A_TESTER/','user_content/','imports/','DEV/'],
-                  'obsolete_files':[]
-              }
-              old_sync=asset(target,lambda n:n=='sync_manifest.json')
-              if old_sync:delete_asset(old_sync)
-              sync_path=tmp/'sync_manifest.json';sync_path.write_text(json.dumps(sync_manifest,ensure_ascii=False,indent=2),encoding='utf-8')
-              upload_asset(target,sync_path,'sync_manifest.json')
-
-              # Remove stale target-local sync buckets from an earlier rerun. Packs
-              # referenced from the baseline release are never touched.
-              for nm,a in target_assets.items():
-                  if nm.startswith('COD_SYNC_B') and nm.endswith('.zip') and nm not in referenced_names:
-                      delete_asset(a)
-
-              # Refresh manifest/checksums so the rebuilt FULL digest is authoritative.
-              man_asset=asset(target,lambda n:n=='manifest.json')
-              man={}
-              if man_asset:
-                  mp=tmp/'manifest.json';download_asset(man_asset,mp);man=json.loads(mp.read_text(encoding='utf-8'));delete_asset(man_asset)
-              man['full_asset']=full_name;man.setdefault('sha256',{})[full_name]=full_sha;man['full_rebuilt_on_github']=True;man['full_baseline_tag']=baseline_tag
-              mp=tmp/'manifest.json';mp.write_text(json.dumps(man,ensure_ascii=False,indent=2),encoding='utf-8');upload_asset(target,mp,'manifest.json')
-
-              sums_asset=asset(target,lambda n:n=='SHA256SUMS.txt')
-              lines=[]
-              if sums_asset:
-                  sp=tmp/'old_sums.txt';download_asset(sums_asset,sp);delete_asset(sums_asset)
-                  lines=[x for x in sp.read_text(encoding='utf-8',errors='replace').splitlines() if '_FULL.zip' not in x]
-              lines.append(f'{full_sha}  {full_name}')
-              sp=tmp/'SHA256SUMS.txt';sp.write_text('\n'.join(lines)+'\n',encoding='utf-8');upload_asset(target,sp,'SHA256SUMS.txt')
-              print(json.dumps({'ok':True,'target':target_tag,'baseline':baseline_tag,'full':full_name,'sha256':full_sha}))
-          finally:
-              shutil.rmtree(tmp,ignore_errors=True)
+              bz=tmp/'base.zip';uz=tmp/'update.zip';download(ba,bz);download(ua,uz);ex=tmp/'full';ex.mkdir()
+              with zipfile.ZipFile(bz) as z:z.extractall(ex)
+              roots=[p for p in ex.iterdir() if p.is_dir()];root=roots[0] if len(roots)==1 else ex
+              with zipfile.ZipFile(uz) as z:
+                  um=json.loads(z.read('update_manifest.json'))
+                  for rel in um.get('replace') or []:
+                      if rel.startswith(preserve) or '..' in Path(rel).parts:raise RuntimeError('Unsafe replace '+rel)
+                      dst=(root/rel).resolve();dst.parent.mkdir(parents=True,exist_ok=True);dst.write_bytes(z.read(rel))
+                  for rel in um.get('delete') or []:
+                      if rel.startswith(preserve) or '..' in Path(rel).parts:raise RuntimeError('Unsafe delete '+rel)
+                      dst=(root/rel).resolve()
+                      if dst.is_file() or dst.is_symlink():dst.unlink(missing_ok=True)
+              m=re.search(r'v(\d+)\.(\d+)\.(\d+)-rc(\d+)',target_tag,re.I);label=f'V{m.group(1)}_{m.group(2)}_{m.group(3)}_RC{m.group(4)}';full_name=f'COD_ASSISTANT_{label}_FULL.zip';fz=tmp/full_name
+              with zipfile.ZipFile(fz,'w',zipfile.ZIP_DEFLATED,compresslevel=7) as z:
+                  for p in sorted(root.rglob('*')):
+                      if p.is_file():z.write(p,(Path(root.name)/p.relative_to(root)).as_posix())
+              full_sha=sha(fz)
+              for a in list(target.get('assets') or []):
+                  n=str(a.get('name') or '')
+                  if n.endswith('_FULL.zip') or n=='sync_manifest.json' or n.startswith('COD_SYNC_B'):delete(a)
+              full_remote=upload(target,fz,full_name)
+              files={}
+              with zipfile.ZipFile(fz) as z:
+                  for zi in z.infolist():
+                      if zi.is_dir():continue
+                      member=zi.filename;parts=Path(member).parts;rel=Path(*parts[1:]).as_posix() if len(parts)>1 else member
+                      if not rel or rel.startswith(preserve) or rel.split('/',1)[0] not in managed:continue
+                      data=z.read(zi);files[rel]={'sha256':hashlib.sha256(data).hexdigest(),'size':len(data),'zip_member':member,'compress_size':zi.compress_size,'header_offset':zi.header_offset,'compress_type':zi.compress_type}
+              manifest={'schema_version':4,'type':'COD_CANONICAL_FULL','target_tag':target_tag,'full_asset':full_name,'full_sha256':full_sha,'full_size':fz.stat().st_size,'generated_by':'github-actions','managed_roots':sorted(managed),'preserve':list(preserve),'files':files}
+              oldm=asset(target,lambda n:n=='manifest.json');delete(oldm);mp=tmp/'manifest.json';mp.write_text(json.dumps(manifest,ensure_ascii=False,indent=2),encoding='utf-8');upload(target,mp,'manifest.json')
+              olds=asset(target,lambda n:n=='SHA256SUMS.txt');delete(olds);sp=tmp/'SHA256SUMS.txt';sp.write_text(f'{full_sha}  {full_name}\n{sha(mp)}  manifest.json\n',encoding='utf-8');upload(target,sp,'SHA256SUMS.txt')
+              # UPDATE is only a private transport used to rebuild FULL. Remove it once the canonical FULL exists.
+              delete(ua)
+              print(json.dumps({'ok':True,'target':target_tag,'baseline':baseline_tag,'full':full_name,'files':len(files),'full_sha256':full_sha}))
+          finally:shutil.rmtree(tmp,ignore_errors=True)
           PYCODE
