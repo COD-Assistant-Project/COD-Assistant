@@ -1,0 +1,150 @@
+name: COD Assistant - Rebuild FULL
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_tag:
+        description: "Target draft/release tag to receive rebuilt FULL"
+        required: true
+        type: string
+      baseline_tag:
+        description: "Previous tag containing a FULL asset"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  rebuild-full:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rebuild FULL from baseline + delta
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPOSITORY: ${{ github.repository }}
+          TARGET_TAG: ${{ inputs.target_tag }}
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+        run: |
+          python - <<'PYCODE'
+          import os, json, urllib.request, urllib.parse, urllib.error, zipfile, tempfile, shutil, hashlib, re
+          from pathlib import Path
+
+          token=os.environ['GH_TOKEN']; repo=os.environ['GH_REPOSITORY']
+          target_tag=os.environ['TARGET_TAG']; baseline_tag=os.environ['BASELINE_TAG']
+          api=f'https://api.github.com/repos/{repo}'
+          headers={'Accept':'application/vnd.github+json','Authorization':f'Bearer {token}','X-GitHub-Api-Version':'2026-03-10','User-Agent':'COD-Assistant-FULL-Builder/1'}
+
+          def req(url,method='GET',payload=None,accept=None,raw=None,ctype=None):
+              h=dict(headers)
+              if accept:h['Accept']=accept
+              data=raw
+              if payload is not None:
+                  data=json.dumps(payload).encode(); h['Content-Type']='application/json'
+              if ctype:h['Content-Type']=ctype
+              r=urllib.request.Request(url,data=data,method=method,headers=h)
+              with urllib.request.urlopen(r,timeout=600) as x:
+                  b=x.read(); return x.status,b,dict(x.headers.items())
+
+          def jreq(url,method='GET',payload=None):
+              st,b,h=req(url,method,payload); return st,(json.loads(b.decode()) if b else {}),h
+
+          def releases():
+              st,d,_=jreq(api+'/releases?per_page=100'); return d
+
+          def find_release(tag):
+              for r in releases():
+                  if str(r.get('tag_name'))==tag:return r
+              raise RuntimeError(f'Release not found: {tag}')
+
+          def asset(release,pred):
+              for a in release.get('assets') or []:
+                  if pred(str(a.get('name') or '')): return a
+              return None
+
+          def download_asset(a,path):
+              st,b,_=req(a['url'],accept='application/octet-stream'); Path(path).write_bytes(b)
+
+          def delete_asset(a):
+              try:req(a['url'],method='DELETE')
+              except urllib.error.HTTPError as e:
+                  if e.code!=404:raise
+
+          def upload_asset(release,path,name=None):
+              p=Path(path); nm=name or p.name
+              base=str(release['upload_url']).split('{',1)[0]
+              url=base+'?'+urllib.parse.urlencode({'name':nm})
+              st,b,_=req(url,method='POST',raw=p.read_bytes(),ctype='application/zip' if nm.lower().endswith('.zip') else 'application/octet-stream')
+              return json.loads(b.decode())
+
+          def sha(p):
+              h=hashlib.sha256()
+              with open(p,'rb') as f:
+                  for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
+              return h.hexdigest()
+
+          target=find_release(target_tag); baseline=find_release(baseline_tag)
+          base_asset=asset(baseline,lambda n:n.endswith('_FULL.zip'))
+          upd_asset=asset(target,lambda n:n.endswith('_UPDATE.zip'))
+          if not base_asset:raise RuntimeError(f'No FULL in baseline {baseline_tag}')
+          if not upd_asset:raise RuntimeError(f'No UPDATE in target {target_tag}')
+
+          tmp=Path(tempfile.mkdtemp(prefix='cod_full_'))
+          try:
+              base_zip=tmp/'baseline.zip'; upd_zip=tmp/'update.zip'
+              download_asset(base_asset,base_zip); download_asset(upd_asset,upd_zip)
+              extract=tmp/'full'; extract.mkdir()
+              with zipfile.ZipFile(base_zip) as z:z.extractall(extract)
+              roots=[p for p in extract.iterdir()]
+              root=roots[0] if len(roots)==1 and roots[0].is_dir() else extract
+              with zipfile.ZipFile(upd_zip) as z:
+                  manifest=json.loads(z.read('update_manifest.json').decode('utf-8'))
+                  for rel in manifest.get('replace') or []:
+                      if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):raise RuntimeError('Unsafe replace '+rel)
+                      dest=(root/rel).resolve()
+                      if root.resolve() not in dest.parents:raise RuntimeError('Unsafe path '+rel)
+                      dest.parent.mkdir(parents=True,exist_ok=True); dest.write_bytes(z.read(rel))
+                  for rel in manifest.get('delete') or []:
+                      if rel.startswith(('data/','backups/','A_TESTER/','DEV/')):raise RuntimeError('Unsafe delete '+rel)
+                      dest=(root/rel).resolve()
+                      if root.resolve() not in dest.parents:raise RuntimeError('Unsafe delete path '+rel)
+                      if dest.is_file() or dest.is_symlink():dest.unlink(missing_ok=True)
+                      elif dest.is_dir():shutil.rmtree(dest)
+
+              m=re.search(r'v(\d+)\.(\d+)\.(\d+)-rc(\d+)',target_tag,re.I)
+              label=f'V{m.group(1)}_{m.group(2)}_{m.group(3)}_RC{m.group(4)}' if m else re.sub(r'[^A-Za-z0-9]+','_',target_tag).strip('_')
+              full_name=f'COD_ASSISTANT_{label}_FULL.zip'
+              full_zip=tmp/full_name
+              with zipfile.ZipFile(full_zip,'w',zipfile.ZIP_DEFLATED,compresslevel=7) as z:
+                  if root==extract:
+                      for p in sorted(extract.rglob('*')):
+                          if p.is_file():z.write(p,p.relative_to(extract).as_posix())
+                  else:
+                      for p in sorted(root.rglob('*')):
+                          if p.is_file():z.write(p,(Path(root.name)/p.relative_to(root)).as_posix())
+              full_sha=sha(full_zip)
+
+              old=asset(target,lambda n:n.endswith('_FULL.zip'))
+              if old:delete_asset(old)
+              upload_asset(target,full_zip,full_name)
+
+              # Refresh manifest/checksums so the rebuilt FULL digest is authoritative.
+              man_asset=asset(target,lambda n:n=='manifest.json')
+              man={}
+              if man_asset:
+                  mp=tmp/'manifest.json';download_asset(man_asset,mp);man=json.loads(mp.read_text(encoding='utf-8'));delete_asset(man_asset)
+              man['full_asset']=full_name;man.setdefault('sha256',{})[full_name]=full_sha;man['full_rebuilt_on_github']=True;man['full_baseline_tag']=baseline_tag
+              mp=tmp/'manifest.json';mp.write_text(json.dumps(man,ensure_ascii=False,indent=2),encoding='utf-8');upload_asset(target,mp,'manifest.json')
+
+              sums_asset=asset(target,lambda n:n=='SHA256SUMS.txt')
+              lines=[]
+              if sums_asset:
+                  sp=tmp/'old_sums.txt';download_asset(sums_asset,sp);delete_asset(sums_asset)
+                  lines=[x for x in sp.read_text(encoding='utf-8',errors='replace').splitlines() if '_FULL.zip' not in x]
+              lines.append(f'{full_sha}  {full_name}')
+              sp=tmp/'SHA256SUMS.txt';sp.write_text('\n'.join(lines)+'\n',encoding='utf-8');upload_asset(target,sp,'SHA256SUMS.txt')
+              print(json.dumps({'ok':True,'target':target_tag,'baseline':baseline_tag,'full':full_name,'sha256':full_sha}))
+          finally:
+              shutil.rmtree(tmp,ignore_errors=True)
+          PYCODE
